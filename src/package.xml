@@ -5,6 +5,10 @@
         <members>BaseClass_Test</members>
         <members>IBaseClass</members>
         <members>TestDataFactory</members>
+        <members>ITriggerBase</members>
+        <members>TriggerBase</members>
+        <members>TriggerDispatcher</members>
+        <members>TriggerDispatcherTest</members>
         <name>ApexClass</name>
     </types>
     <version>42.0</version>
