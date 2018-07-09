@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Package xmlns="http://soap.sforce.com/2006/04/metadata">
+    <types>
+        <members>BaseClass</members>
+        <members>BaseClass_Test</members>
+        <members>IBaseClass</members>
+        <members>TestDataFactory</members>
+        <name>ApexClass</name>
+    </types>
+    <version>42.0</version>
+</Package>
