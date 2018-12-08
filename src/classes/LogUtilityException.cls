@@ -3,7 +3,7 @@
  * Request counts as an API request
  *
  * @author P. Victoriano
- * @date 18/11/2017 
+ * @date 18/11/2017
  **/
 public class LogUtilityException extends Exception {
 	//TODO finalize Generic Message
@@ -45,6 +45,9 @@ public class LogUtilityException extends Exception {
 		}
 		throw new AuraHandledException(sMsg);
 	}
+	public static void throwAura(String name, String message, Integer code, String sType) {
+		throw new AuraHandledException(new AuraExceptionData(name, message, code, sType).toJSON());
+	}
 	/**
 	 * Formatted Apex Debug Log message
 	 * @param Anydatatype_msg Any Object
@@ -58,6 +61,18 @@ public class LogUtilityException extends Exception {
 		});
 		System.debug(sMsg);
 	}
+	public static void getLimits() {
+		String sMsg = '!!@@##: \n';
+		sMsg += getDebugStack() + '\n';
+		sMsg += 'CPU Time:' + Limits.getCpuTime() + '/' + Limits.getLimitCpuTime() + '\n';
+		sMsg += 'Heap Size:' + Limits.getHeapSize() + '/' + Limits.getLimitHeapSize() + '\n';
+		sMsg += 'DML Rows:' + Limits.getDMLRows() + '/' + Limits.getLimitDMLRows() + '\n';
+		sMsg += 'DML Statements:' + Limits.getDMLStatements() + '/' + Limits.getLimitDMLStatements() + '\n';
+		sMsg += 'SOQL Queries:' + Limits.getQueries() + '/' + Limits.getLimitQueries() + '\n';
+		sMsg += 'SOQL Rows:' + limits.getQueryRows() + '/' + Limits.getLimitQueryRows();
+		System.debug(sMsg);
+	}
+
 	/**
 	 * Log a custom trace message
 	 * @param stype Type of Log
@@ -121,10 +136,21 @@ public class LogUtilityException extends Exception {
 				isValRuleError = true;
 			}
 		}
-		String sInputStream = String.format('{0} {1} : {2}', new LIST<String> {
-			String.valueOf(err.getCause()),
+		String sParam1 = '';
+		if (err.getCause() != null) {
+			sParam1 += String.valueOf(err.getCause());
+		}
+		if (String.isNotBlank(err.getStackTraceString())) {
+			sParam1 += String.valueOf(err.getStackTraceString());
+		}
+		String strObj = '';
+		if (obj != null) {
+			strObj = String.valueOf(obj);
+		}
+		String sInputStream = String.format('{0} {1}\n{2}', new LIST<String> {
+			sParam1,
 			String.valueOf(err.getLineNumber()),
-			String.valueOf(obj)
+			strObj
 		});
 		LogEvent__e nLog = new LogEvent__e();
 		nLog.CurrentUser__c = UserInfo.getUserId();
@@ -134,12 +160,12 @@ public class LogUtilityException extends Exception {
 		nLog.Type__c = String.valueOf(err.getTypeName());
 		nLog.Priority__c = 'ERROR';
 		//dont log if type is in the list
-		if (!skippedTypes.contains(errType) || System.isBatch() || System.isScheduled() || System.isFuture()) {
+		if (!skippedTypes.contains(errType) || System.isBatch() || System.isScheduled() || System.isFuture() || System.isQueueable()) {
 			QueueLogs(nLog);
 		}
 		//Since this is a validation rule reThrow message to user
 		if (isValRuleError) {
-			throw new LogUtilityException(errorMsg);
+			throw new LogUtilityException(cleanseValMessage(errorMsg));
 		}
 	}
 	/**
@@ -165,35 +191,48 @@ public class LogUtilityException extends Exception {
 		} else {
 			errorMsg = SYSMSG;
 		}
-		for (SObject sobj : lSobjects) {
-			String sInputStream = String.format('{0} {1}\n{2}', new LIST<String> {
-				String.valueOf(err.getCause()),
-				String.valueOf(err.getLineNumber()),
-				String.valueOf(sobj)
-			});
-			LogEvent__e nLog = new LogEvent__e();
-			nLog.CurrentUser__c = UserInfo.getUserId();
-			nLog.Stack__c = getStack();
-			nLog.Input__c = sInputStream;
-			nLog.Message__c = String.valueOf(err.getMessage());
-			nLog.Type__c = String.valueOf(err.getTypeName());
-			nLog.Priority__c = 'ERROR';
-			//dont log if type is in the list
-			if (!skippedTypes.contains(errType) || System.isBatch() || System.isScheduled() || System.isFuture()) {
-				listLogs.add(nLog);
+		if (lSobjects != null) {
+			for (SObject sobj : lSobjects) {
+				String sParam1 = '';
+				if (err.getCause() != null) {
+					sParam1 += String.valueOf(err.getCause());
+				}
+				if (String.isNotBlank(err.getStackTraceString())) {
+					sParam1 += String.valueOf(err.getStackTraceString());
+				}
+				String strObj = '';
+				if (sobj != null) {
+					strObj = JSON.serialize(sobj);
+				}
+				String sInputStream = String.format('{0} {1}\n{2}', new LIST<String> {
+					sParam1,
+					String.valueOf(err.getLineNumber()),
+					strObj
+				});
+				LogEvent__e nLog = new LogEvent__e();
+				nLog.CurrentUser__c = UserInfo.getUserId();
+				nLog.Stack__c = getStack();
+				nLog.Input__c = sInputStream;
+				nLog.Message__c = String.valueOf(err.getMessage());
+				nLog.Type__c = String.valueOf(err.getTypeName());
+				nLog.Priority__c = 'ERROR';
+				//dont log if type is in the list
+				if (!skippedTypes.contains(errType) || System.isBatch() || System.isScheduled() || System.isFuture() || System.isQueueable()) {
+					listLogs.add(nLog);
+				}
+				//append error on sobject
+				sobj.addError(cleanseValMessage(errorMsg));
 			}
-			//append error on sobject
-			sobj.addError(errorMsg);
-		}
-		if (!listLogs.isEmpty()) {
-			QueueLogs(listLogs);
+			if (!listLogs.isEmpty()) {
+				QueueLogs(listLogs);
+			}
 		}
 	}
 	/**
 	 * Log Commit Error Records
 	 * @param commitRecords List of CommitRecords
 	 */
-	public static void logCommitRecords(GLBL_BaseClass.CommitRecord[] commitRecords) {
+	public static void logCommitRecords(BaseClass.CommitRecord[] commitRecords) {
 		logCommitRecords(commitRecords, null);
 	}
 	/**
@@ -201,10 +240,10 @@ public class LogUtilityException extends Exception {
 	 * @param commitRecords  CommitError Records
 	 * @param triggerRecords Trigger Records
 	 */
-	public static void logCommitRecords(GLBL_BaseClass.CommitRecord[] commitRecords, List<SObject> triggerRecords) {
+	public static void logCommitRecords(BaseClass.CommitRecord[] commitRecords, List<SObject> triggerRecords) {
 		List<LogEvent__e> listLogs = new List<LogEvent__e>();
 		if (commitRecords != null) {
-			for (GLBL_BaseClass.CommitRecord oerror : commitRecords) {
+			for (BaseClass.CommitRecord oerror : commitRecords) {
 				if (oerror.getIsSuccess() == false) {
 					LogEvent__e nLog = new LogEvent__e();
 					nLog.CurrentUser__c = UserInfo.getUserId();
@@ -215,7 +254,7 @@ public class LogUtilityException extends Exception {
 					nLog.Priority__c = 'ERROR';
 					//dont log if type is in the list
 					//Allow from Batch, Schedule and Future
-					if (!skippedTypes.contains(nLog.Type__c) || System.isBatch() || System.isScheduled() || System.isFuture()) {
+					if (!skippedTypes.contains(nLog.Type__c) || System.isBatch() || System.isScheduled() || System.isFuture() || System.isQueueable()) {
 						listLogs.add(nLog);
 					}
 				}
@@ -232,6 +271,33 @@ public class LogUtilityException extends Exception {
 					String sMsg = errArray.get(lengthArr);
 					sobj.addError(sMsg);
 				}
+			}
+		}
+	}
+	/**
+	 * Logs EmailResults
+	 * @param emailResults EmailResults
+	 */
+	public static void logEmailErrors(Messaging.SendEmailResult[] emailResults) {
+		List<LogEvent__e> listLogs = new List<LogEvent__e>();
+		if (emailResults != null) {
+			for (Messaging.SendEmailResult result : emailResults) {
+				if (!result.isSuccess()) {
+					for (Messaging.SendEmailError err : result.getErrors()) {
+						LogEvent__e nLog = new LogEvent__e();
+						nLog.CurrentUser__c = UserInfo.getUserId();
+						nLog.Stack__c = getStack();
+						nLog.Input__c = 'TargetObjectId=' + err.getTargetObjectId() + '\nFields=' + err.getFields();
+						nLog.Message__c = String.valueOf(err.getMessage());
+						nLog.Type__c = String.valueOf(err.getStatusCode());
+						nLog.Priority__c = 'ERROR';
+						listLogs.add(nLog);
+					}
+				}
+			}
+
+			if (!listLogs.isEmpty()) {
+				QueueLogs(listLogs);
 			}
 		}
 	}
@@ -259,17 +325,29 @@ public class LogUtilityException extends Exception {
 	@TestVisible
 	static String getStack() {
 		String[] stackException = new DmlException().getStackTraceString().split('\n');
-		String callingStack = stackException[2].substringBefore(':').substringBeforeLast(':');
+		//callingStack = stackException[2].substringBefore(':').substringBeforeLast(':');
+		String callingStack = '';
+		for (String str : stackException) {
+			callingStack = str.substringBefore(':').substringBeforeLast(':');
+			if (!str.containsIgnoreCase('Class.LogUtilityException')) {
+				break;
+			}
+		}
 		return callingStack;
 	}
 	@TestVisible
 	static String getDebugStack() {
 		String[] stackException = new DmlException().getStackTraceString().split('\n');
-		String callingStack = stackException[2].substringBefore(', column');
+		String callingStack = '';
+		for (String str : stackException) {
+			callingStack = str.substringBefore(', column');
+			if (!str.containsIgnoreCase('Class.LogUtilityException')) {
+				break;
+			}
+		}
 		return callingStack;
 	}
-	@TestVisible
-	static String cleanseMessage(String errorMsg, String errType) {
+	public static String cleanseMessage(String errorMsg, String errType) {
 		String subStr = String.format('{0}, ', new LIST<String> {errType});
 		if (String.isNotBlank(errorMsg) && String.isNotBlank(errType)) {
 			if (errorMsg.contains(']: [')) {
@@ -281,4 +359,48 @@ public class LogUtilityException extends Exception {
 		}
 		return errorMsg;
 	}
+	public static String cleanseValMessage(String errorMsg) {
+		String errType = StatusCode.FIELD_CUSTOM_VALIDATION_EXCEPTION.name();
+		String subStr = String.format('{0}, ', new LIST<String> {errType});
+		if (String.isNotBlank(errorMsg) && String.isNotBlank(errType)) {
+			if (errorMsg.contains(errType)) {
+				errorMsg = errorMsg.substringBetween(subStr, ': [');
+			}
+		}
+		return errorMsg;
+	}
+	// Wrapper class for my custom exception data to lightning component
+	public class AuraExceptionData {
+		public String name;
+		public String message;
+		public Integer code;
+		public String variant;
+		public String severity;
+
+		public AuraExceptionData(String name, String message, Integer code, String typeMsg) {
+			this.name = name;
+			this.message = message;
+			this.code = code;
+			if (String.isBlank(this.name)) {
+				this.name = 'System Exception';
+			}
+			// 'error', 'warning', 'success', or 'info'
+			this.variant = typeMsg;
+			if (code == 0) {
+				this.name = 'Internal Server Error';
+				this.message = SYSMSG;
+				this.variant = 'error';
+			}
+			if (String.isNotBlank(this.variant)) {
+				this.severity = this.variant;
+				if (typeMsg == 'success') {
+					this.severity = 'confirm';
+				}
+			}
+		}
+		public String toJSON() {
+			return JSON.serialize(this);
+		}
+	}
+
 }
