@@ -10,10 +10,18 @@ public virtual class BaseClass implements IBaseClass {
     //
     @TestVisible
     private List<String> commitOrderList {get; set;}
+    @TestVisible
     private Map<String, List<SObject>> mapRecordsInsert {get; set;}
+    @TestVisible
     private Map<String, List<SObject>> mapRecordsUpdate {get; set;}
+    @TestVisible
     private Map<String, List<SObject>> mapRemove {get; set;}
+    @TestVisible
     private Map<String, Records> mapRelationship {get; set;}
+
+    @TestVisible
+    private Map<String, List<SObject>> mapBulkRecordsTest {get; set;}
+
     /**
      * Constructor Overloaded class is virtual and can be extended or initialized
      *
@@ -32,7 +40,12 @@ public virtual class BaseClass implements IBaseClass {
     /**
      * Virtual Class implements database management
      *
-     * @param lOrder
+     * @param lOrder Schema.sObjectType[]
+     * @example
+     *             List<Schema.sObjectType> {
+     *                 Account.sObjectType,
+     *                 Contact.sObjectType
+     *              }
      */
     public BaseClass(List<Schema.sObjectType> lOrder) {
         initialize(lOrder);
@@ -49,7 +62,6 @@ public virtual class BaseClass implements IBaseClass {
     public void initialize(List<Schema.sObjectType> listCommitOrder) {
         lCommitOrder = listCommitOrder;
         instantiate();
-        //Todo
     }
     /**
      * @description Adds a single record
@@ -58,7 +70,6 @@ public virtual class BaseClass implements IBaseClass {
      */
     public void push(SObject sobj) {
         push(sobj, null, null);
-        RestContext
     }
     /**
      * @description Adds a Record to be Related with Parent
@@ -69,14 +80,15 @@ public virtual class BaseClass implements IBaseClass {
      */
     public void push(SObject sobj, Schema.sObjectField relatedField, SObject relatedRecord) {
         String stype;
-
+        //system.debug('push method');
         try {
             if (sobj != null && validate(sobj)) {
                 stype = sobj.getSObjectType().getDescribe().getName();
                 relate(sobj, relatedField, relatedRecord);
-
+                //system.debug('relate method done');
                 if (sobj.Id != null) {
                     mapRecordsUpdate.get(stype).add(sobj);
+                    //system.debug('mapRecordsUpdate done');
                 } else {
                     mapRecordsInsert.get(stype).add(sobj);
                 }
@@ -86,6 +98,7 @@ public virtual class BaseClass implements IBaseClass {
             throw new BaseClassException(e.getMessage());
         }
     }
+
     /**
      * @description Removes a Record
      * @param       sobj
@@ -106,9 +119,6 @@ public virtual class BaseClass implements IBaseClass {
             }
         }
     }
-    public void noempt(){
-
-    }
     /**
      * @description creates a relationship between source and target
      * @param       sobj            source
@@ -116,6 +126,7 @@ public virtual class BaseClass implements IBaseClass {
      * @param       relatedRecord   target
      */
     public void relate(SObject sobj, Schema.sObjectField relatedField, SObject relatedRecord) {
+
         if (sobj != null && relatedField != null && relatedRecord != null) {
             String stype = sobj.getSObjectType().getDescribe().getName();
             mapRelationship.get(stype).add(sobj, relatedField, relatedRecord);
@@ -145,13 +156,14 @@ public virtual class BaseClass implements IBaseClass {
      *              clears last saved records
      * @return
      */
-    public Boolean commitRecords() {
+    public List<BaseClass.CommitRecord> commitRecords() {
         Savepoint sp = Database.setSavepoint();
-        Boolean issuccess = false;
+        List<BaseClass.CommitRecord> commitRecords = new List<BaseClass.CommitRecord>();
+        Boolean isUpd = false;
         List<SObject> lRecInsert = new List<SObject>();
         List<SObject> lRecUpdate = new List<SObject>();
         List<SObject> lRecDelete = new List<SObject>();
-
+        List<SObject> lRecProcessed = new List<SObject>();
         try {
             for (String stype : commitOrderList) {
                 //Insert
@@ -160,46 +172,87 @@ public virtual class BaseClass implements IBaseClass {
                 lRecInsert = mapRecordsInsert.get(stype);
 
                 if (!lRecInsert.isEmpty()) {
+                    lRecProcessed = lRecInsert.deepClone();
                     insert lRecInsert;
+                    lRecProcessed = new List<SObject>();
                 }
 
                 //Update
                 lRecUpdate = mapRecordsUpdate.get(stype);
 
                 if (!lRecUpdate.isEmpty()) {
+                    isUpd = true;
+                    lRecProcessed = lRecUpdate.deepClone();
                     update lRecUpdate;
+                    lRecProcessed = new List<SObject>();
                 }
 
                 //Delete
                 lRecDelete = mapRemove.get(stype);
 
                 if (!lRecDelete.isEmpty()) {
+                    lRecProcessed = lRecDelete.deepClone();
                     delete lRecDelete;
+                    lRecProcessed = new List<SObject>();
                 }
             }
-
-            issuccess = true;
-        } catch (Exception e) {
+        } catch (System.DmlException e) {
+            for (Integer i = 0; i < e.getNumDml(); i++) {
+                Integer indxFailedRec = e.getDmlIndex(i);
+                String errMsg = e.getDmlMessage(i);
+                String dmlType = String.valueOf(e.getDmlType(i));
+                SObject sobj = lRecProcessed.get(indxFailedRec);
+                String stype = sobj.getSObjectType().getDescribe().getName();
+                commitRecords.add(
+                    new CommitRecord(stype, sobj,
+                                     new List<String> {dmlType, errMsg},
+                                     isUpd)
+                );
+            }
             Database.rollback(sp);
-            throw new BaseClassException(e.getMessage());
+        } catch (Exception e) {
+            for (SObject sobj : lRecProcessed) {
+                String stype = sobj.getSObjectType().getDescribe().getName();
+                SObject nSobj = sobj.clone(true, true, true, true);
+                String sException = String.valueOf(e);
+                commitRecords.add(
+                    new CommitRecord(stype, nSobj, new List<String> {'Exception', sException}, isUpd)
+                );
+            }
+            Database.rollback(sp);
         } finally {
             //Clears map and recreates a new set
             instantiate();
         }
-
-        return issuccess;
+        return commitRecords;
     }
     /**
-     * @description Performs Partial Save and Commit to Database
-     *              On Error it Returns a list of Records that failed
-     *              clears last saved records
-     * @return BaseClass.CommitRecord
-     */
+    * @description Performs Partial Save and Commit to Database
+    *              clears last saved records
+    *              false second parameter to allow partial processing of records on failure
+    * @return BaseClass.CommitRecord
+    */
     public List<CommitRecord> commitRecordsPartial() {
-        return commitRecordsPartial(false);
+        return commitRecordsPartial(false, false);
     }
+    /**
+    * @description Performs Partial Save and Commit to Database
+    *              On Error it Returns a list of Records that failed
+    *              clears last saved records
+    *              false second parameter to allow partial processing of records on failure
+    * @return BaseClass.CommitRecord
+    */
     public List<CommitRecord> commitRecordsPartial(Boolean returnSuccess) {
-        CommitRecord errRec;
+        return commitRecordsPartial(returnSuccess, false);
+    }
+    /**
+     * Performs Partial Save and Commit to Database
+     *              clears last saved Records
+     * @param  returnSuccess True will Return Success Records
+     * @param optAllOrNone   Database OptAllOrNone
+     * @return               List Of CommitRecords
+     */
+    public List<CommitRecord> commitRecordsPartial(Boolean returnSuccess, Boolean optAllOrNone) {
         List<CommitRecord> dbErrors = new List<CommitRecord>();
         List<SObject> lRecInsert = new List<SObject>();
         List<SObject> lRecUpdate = new List<SObject>();
@@ -214,15 +267,15 @@ public virtual class BaseClass implements IBaseClass {
                 Integer iIns = 0;
 
                 //Checks if success
-                for (Database.SaveResult osr : Database.insert(lRecInsert, false)) {
+                for (Database.SaveResult osr : Database.insert(lRecInsert, optAllOrNone)) {
                     if (returnSuccess) {
                         dbErrors.add(
-                            new CommitRecord(lRecInsert.get(iIns).clone(true, true, true, true), osr, false)
+                            new CommitRecord(stype, lRecInsert.get(iIns).clone(true, true, true, true), osr, false)
                         );
                     } else {
                         if (!osr.isSuccess()) {
                             dbErrors.add(
-                                new CommitRecord(lRecInsert.get(iIns).clone(true, true, true, true), osr, false)
+                                new CommitRecord(stype, lRecInsert.get(iIns).clone(true, true, true, true), osr, false)
                             );
                         }
                     }
@@ -236,17 +289,16 @@ public virtual class BaseClass implements IBaseClass {
 
             if (!lRecUpdate.isEmpty()) {
                 Integer iUpd = 0;
-
                 //Checks if success
-                for (Database.SaveResult osr : Database.update(lRecUpdate, false)) {
+                for (Database.SaveResult osr : Database.update(lRecUpdate, optAllOrNone)) {
                     if (returnSuccess) {
                         dbErrors.add(
-                            new CommitRecord(lRecUpdate.get(iUpd).clone(true, true, true, true), osr, true)
+                            new CommitRecord(stype, lRecUpdate.get(iUpd).clone(true, true, true, true), osr, true)
                         );
                     } else {
                         if (!osr.isSuccess()) {
                             dbErrors.add(
-                                new CommitRecord(lRecUpdate.get(iUpd).clone(true, true, true, true), osr, true)
+                                new CommitRecord(stype, lRecUpdate.get(iUpd).clone(true, true, true, true), osr, true)
                             );
                         }
                     }
@@ -262,15 +314,15 @@ public virtual class BaseClass implements IBaseClass {
                 Integer iDel = 0;
 
                 //Checks if success
-                for (Database.DeleteResult osr : Database.delete(lRecDelete, false)) {
+                for (Database.DeleteResult osr : Database.delete(lRecDelete, optAllOrNone)) {
                     if (returnSuccess) {
                         dbErrors.add(
-                            new CommitRecord(lRecDelete.get(iDel).clone(true, true, true, true), osr)
+                            new CommitRecord(stype, lRecDelete.get(iDel).clone(true, true, true, true), osr)
                         );
                     } else {
                         if (!osr.isSuccess()) {
                             dbErrors.add(
-                                new CommitRecord(lRecDelete.get(iDel).clone(true, true, true, true), osr)
+                                new CommitRecord(stype, lRecDelete.get(iDel).clone(true, true, true, true), osr)
                             );
                         }
                     }
@@ -284,6 +336,7 @@ public virtual class BaseClass implements IBaseClass {
         instantiate();
         return dbErrors;
     }
+
     /**
      * @description instantiates handler
      */
@@ -294,6 +347,9 @@ public virtual class BaseClass implements IBaseClass {
         mapRemove = new Map<String, List<SObject>>();
         mapRelationship = new Map<String, Records>();
         commitOrderList = new List<String>();
+
+        //Priyanka testing
+        mapBulkRecordsTest = new Map<String, List<SObject>>();
 
         try {
             if (!lCommitOrder.isEmpty()) {
@@ -365,31 +421,97 @@ public virtual class BaseClass implements IBaseClass {
     public class CommitRecord {
         public SObject record {get; set;}
         public List<Database.Error> errors {get; set;}
+        public String errorType {get; set;}
+        public List<String> errorsMsg {get; set;}
+        public String sObjectTypeName {get; set;}
         private Boolean isSuccessS = false;
         private Boolean isUpdateS = false;
+        /**
+         * Determine if Update Call
+         * @return Boolean
+         */
         public Boolean getIsUpdate() {
             return isUpdateS;
         }
+        /**
+         * Return if Success Record
+         * @return Boolean
+         */
         public Boolean getIsSuccess() {
             return isSuccessS;
         }
-        public CommitRecord(SObject rec, Database.SaveResult sr, Boolean isUpd) {
+        public String getErrorType() {
+            String sval = '';
+            if (errors != null && !errors.isEmpty()) {
+                sval = String.valueOf(errors[0].statusCode);
+            } else {
+                sval = errorType;
+            }
+            return sval;
+        }
+        public CommitRecord(SObject rec, List<String> sExlist, Boolean isUpd) {
+            this('', rec, sExlist, isUpd);
+        }
+        public CommitRecord(String sType, SObject rec, List<String> sExlist, Boolean isUpd) {
+            errorsMsg = new List<String>();
+            this.sObjectTypeName = sType;
+            this.record = rec;
+            this.isUpdateS = isUpd;
+            errorsMsg.addAll(sExlist);
+        }
+        public CommitRecord(String sType, SObject rec, Database.SaveResult sr, Boolean isUpd) {
+            errorsMsg = new List<String>();
+            this.sObjectTypeName = sType;
             this.record = rec;
             this.isUpdateS = isUpd;
 
             if (sr != null) {
                 this.isSuccessS = sr.isSuccess();
                 errors = sr.getErrors();
+                if (errors != null) {
+                    for (Database.Error err : errors) {
+                        errorsMsg.add(err.getMessage());
+                    }
+                }
+
             }
         }
-        public CommitRecord(SObject rec, Database.DeleteResult dr) {
+        public CommitRecord(String sType, SObject rec, Database.DeleteResult dr) {
+            errorsMsg = new List<String>();
             this.record = rec;
-
+            this.sObjectTypeName = sType;
             if (dr != null) {
                 this.isSuccessS = dr.isSuccess();
                 errors = dr.getErrors();
+                if (errors != null) {
+                    for (Database.Error err : errors) {
+                        errorsMsg.add(err.getMessage());
+                    }
+                }
             }
         }
+    }
+    /**
+     * Injects the instance of an existing BaseClass
+     * Initialise destroys variable references
+     * @param instance BaseClass
+     */
+    public void setInstance(BaseClass instance) {
+        if (instance != null) {
+            this.lCommitOrder = instance.lCommitOrder;
+            this.commitOrderList = instance.commitOrderList;
+            this.mapRecordsInsert = instance.mapRecordsInsert;
+            this.mapRecordsUpdate = instance.mapRecordsUpdate;
+            this.mapRemove = instance.mapRemove;
+            this.mapRelationship = instance.mapRelationship;
+        }
+    }
+    /**
+     * Retrieves the instance of this BaseClass
+     * @return Instance of BaseClass
+     */
+    public BaseClass getInstance() {
+        return this;
     }
     public class BaseClassException extends Exception {}
 }
